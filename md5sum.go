@@ -1,6 +1,9 @@
 package main
-import "fmt"
-import "io/ioutil"
+import (
+  "fmt"
+  "io/ioutil"
+  "os"
+)
 
 // rotate a 32-bit word to the left.
 func left_rotate(num, cnt uint32) uint32 {
@@ -165,7 +168,12 @@ func md5_cycle(x []uint32, leng uint32) *[4]uint32 {
 }
 
 func main() {
-  file := "md5sum.go"
+  var file string
+  if len(os.Args) == 1 {
+    file = os.Args[0]
+  } else {
+    file = os.Args[1]
+  }
   tmp, err := ioutil.ReadFile(file)
   if err != nil {
     panic(err)
