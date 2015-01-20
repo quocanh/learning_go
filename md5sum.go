@@ -4,7 +4,7 @@ package main
 // The filename is provided in command line
 // If no filename is provided, it calculate the md5 of its executable
 
-// In this implemantation it reads file one chunk at a time, so it consume less memory
+// In this implementation it reads file one chunk at a time, so it consume less memory
 
 import (
     "fmt"
