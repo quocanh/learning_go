@@ -1,8 +1,14 @@
 package main
+
+// Program to calculate md5 of a file
+// The filename is provided in command line
+// If no filename is provided, it calculate the md5 of its executable
+
+// In this implemantation it reads file one chunk at a time, so it consume less memory
+
 import (
-  "fmt"
-  "io/ioutil"
-  "os"
+    "fmt"
+    "os"
 )
 
 // rotate a 32-bit word to the left.
@@ -30,30 +36,71 @@ func md5_ii(a, b, c, d, x, s, t uint32) uint32 {
 }
 
 // convert string to 32-bit little-endian words
-//   and perform padding
+//   and perform padding. The string is the full message to be hashed
 func byte2words(input []byte) []uint32 {
   var byte_len uint32 = uint32(len(input)) // input length in bytes
   var word_len uint32 = (byte_len + 3 ) >> 2  // input size in words
-  var total_len uint32
-  if word_len % 16 == 14 {
-    total_len = word_len + 16
-  } else {
-    total_len = (((byte_len * 8 + 64) >> 9) << 4) + 14
-  }
+  var total_len uint32 = (((word_len+2) >> 4) << 4) + 14  // rounding to 16n+14 with spec_14_15
 
   // copy string content to output
   var output = make([]uint32, total_len + 2) // two extra words to keep 64-bit message length
   var i uint32
-  for i = 0; i < byte_len * 8; i += 8 {
-    output[i>>5] |= uint32(input[i>>3] & 0xFF) << (i%32)
+  for i = 0; i < byte_len ; i++ {
+    output[i>>2] |= uint32(input[i] & 0xFF) << ((i<<3)%32)
   }
 
   // padding
-  output[(byte_len * 8) >> 5] |= 0x80 << ((byte_len * 8) % 32)
+  // output[(byte_len << 3) >> 5] |= 0x80 << ((byte_len << 3) % 32)
+  output[byte_len >> 2] |= 0x80 << ((byte_len << 3) % 32)
 
   // appending message length
-  output[total_len] = (byte_len * 8) & 0xffffffff
-  output[total_len+1] = (byte_len * 8) >> 32
+  output[total_len] = (byte_len << 3) & 0xffffffff
+  output[total_len+1] = (byte_len << 3) >> 32
+
+  return output;
+}
+
+// convert string to 32-bit little-endian words. Its length must be 64*n
+// The string is a part of the message to be hashed, no padding for it
+func byte2words_no_padding(input []byte) []uint32 {
+  var byte_len uint32 = uint32(len(input)) // input length in bytes
+  if byte_len % 64 != 0 {
+    panic("This function only works on string with length of 64*n characters!")
+  }
+  var word_len uint32 = byte_len >> 2  // input size in words
+
+  // copy string content to output
+  var output = make([]uint32, word_len)
+  var i uint32
+  for i = 0; i < byte_len ; i++ {
+    output[i>>2] |= uint32(input[i] & 0xFF) << ((i<<3)%32)
+  }
+
+  return output;
+}
+
+// convert string to 32-bit little-endian words. Its length must be 64*n
+// The string should be the last part of the message to be hashed,
+//   the length (in bytes) of previous part is required
+func byte2words_with_padding(input []byte, prev_len uint32) []uint32 {
+  var byte_len uint32 = uint32(len(input)) // input length in bytes
+  var word_len uint32 = byte_len >> 2  // input size in words
+  var buffer_len uint32 = (((word_len+2) >> 4) << 4) + 14  // rounding to 16n+14 with spec_14_15
+
+  // copy string content to output
+  var output = make([]uint32, buffer_len + 2) // two extra words to keep 64-bit message length
+  var i uint32
+  for i = 0; i < byte_len ; i++ {
+    output[i>>2] |= uint32(input[i] & 0xFF) << ((i<<3)%32)
+  }
+
+  // padding
+  output[byte_len >> 2] |= 0x80 << ((byte_len << 3) % 32)
+
+  // appending message length
+  msg_len := byte_len + prev_len
+  output[buffer_len] = (msg_len << 3) & 0xffffffff
+  output[buffer_len+1] = (msg_len << 3) >> 32
 
   return output;
 }
@@ -68,19 +115,63 @@ func words2str(x *[4]uint32) string {
   return out
 }
 
-func calc_md5(s []byte) *[4]uint32 {
-  a1 := byte2words(s)  // convert byte_array to array of little-endian words
-  return md5_cycle(a1, uint32(len(s)) * 8)  // apply md5 algorithm on little-endian words
+func check(e error) {
+    if e != nil {
+        panic(e)
+    }
 }
 
-/*
- * Calculate the MD5 of an array of little-endian words
- */
-func md5_cycle(x []uint32, leng uint32) *[4]uint32 {
+// Calculate md5 hash for a file, reading one chunk a time until EOF
+func file_md5(file string) *[4]uint32 {
+  f, err := os.Open(file)
+  check(err)
+  defer f.Close()
+  fi, err := f.Stat()
+  check(err)
+  file_size := fi.Size()
+
   var a uint32 = 0x67452301
   var b uint32 = 0xefcdab89
   var c uint32 = 0x98badcfe
   var d uint32 = 0x10325476
+  regs := [...]uint32{a,b,c,d}
+
+  var chunk_size uint32 = 10240
+  buf := make([]byte, chunk_size)
+  n1, err := f.Read(buf)
+  check(err)
+
+  var wb []uint32
+  var cumulative_len uint32 = 0
+  for uint32(n1) == chunk_size {
+    cumulative_len += chunk_size
+    wb = byte2words_no_padding(buf)
+    md5_cycle_with_registers(wb, uint32(n1 * 8), &regs)
+    if int64(cumulative_len) == file_size {
+      n1 = 0
+      break
+    }
+    n1, err = f.Read(buf)
+    check(err)
+  }
+  last_buf := make([]byte, n1)
+  for i:=0; i<n1; i++ {
+    last_buf[i] = buf[i]
+  }
+  fmt.Printf("Last chunk size = %d, cumulative_len = %d\n", n1, cumulative_len)
+  wb = byte2words_with_padding(last_buf, cumulative_len)
+  md5_cycle_with_registers(wb, uint32(n1 * 8), &regs)
+  return &regs
+}
+
+/*
+ * Calculate the MD5 of an array of little-endian words on provided registers
+ */
+func md5_cycle_with_registers(x []uint32, leng uint32, registers *[4]uint32) {
+  var a uint32 = registers[0]
+  var b uint32 = registers[1]
+  var c uint32 = registers[2]
+  var d uint32 = registers[3]
 
   for i := 0; i < len(x); i += 16 {
     var olda uint32 = a
@@ -161,10 +252,10 @@ func md5_cycle(x []uint32, leng uint32) *[4]uint32 {
     c = c + oldc
     d = d + oldd
   }
-
-  o := new([4]uint32)
-  o[0] = a; o[1] = b; o[2] = c; o[3] = d
-  return o
+  registers[0] = a
+  registers[1] = b
+  registers[2] = c
+  registers[3] = d
 }
 
 func main() {
@@ -174,10 +265,8 @@ func main() {
   } else {
     file = os.Args[1]
   }
-  tmp, err := ioutil.ReadFile(file)
-  if err != nil {
-    panic(err)
-  }
-  a := calc_md5(tmp)
+
+  a := file_md5(file)
   fmt.Printf("md5 for the file's content = %s \n", words2str(a))
+
 }
